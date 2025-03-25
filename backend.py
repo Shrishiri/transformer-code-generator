@@ -56,10 +56,9 @@ def detect_application_type(text):
     attributes = {}
     application_types = {
         r"land\s*based": ("Land Based", "0"),
-        r"marine\s*propulsion.*offshore": ("Marine Propulsion O&G Offshore", "1"),
-        r"o&g\s*onshore|onshore": ("O&G Onshore", "2"),
-        r"wind\s*offshore": ("Wind Offshore", "3"),
-        r"atex": ("Atex", "4")
+        r"offshore|off-shore": ("Offshore", "1"),
+        r"o&g\s*onshore|onshore|on-shore": ("O&G Onshore", "2"),
+        r"atex": ("Atex", "3")
     }
     
     text_lower = text.lower() if text else ""
@@ -69,7 +68,7 @@ def detect_application_type(text):
             attributes["Application"] = (app_type, code)
             return attributes  # Stops at the first match
     
-    attributes["Application"] = ("Land Based", "0")  # Default if no match is found
+    attributes["Application"] = ("Land based", "0")  # Default if no match is found
     return attributes
 
 
@@ -114,6 +113,7 @@ def detect_tap_changer(text):
 
 
 
+
 def convert_v_to_kv(value):
     """Convert voltage from V to kV if necessary"""
     value = float(value)
@@ -121,36 +121,60 @@ def convert_v_to_kv(value):
 
 def extract_primary_voltage(text):
     patterns = [
-         # 1. Three-slash kV values (e.g., "10/20/30kV" -> 10 kV)
-        (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*/\s*\d+(?:[.,]\d+)?\s*/\s*\d+(?:[.,]\d+)?\s*kV\b'), 
-         lambda m: float(m.group(1).replace(',', '.'))),
-        
-        # 2. Two-slash kV values (e.g., "4.16/10kV" -> 10 kV)
-         (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)\s*kV\b'),
+        # 1. Three-slash kV values (e.g., "10/20/30kV" -> 10 kV)
+        (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*(?:kV|KV|kv)?(?:\s*/\s*|\s+|-)(\d+(?:[.,]\d+)?)\s*(?:kV|KV|kv)?(?:\s*/\s*|\s+)(\d+(?:[.,]\d+)?)\s*(?:kV|KV|kv)\b',re.IGNORECASE),
+        lambda m: max(float(m.group(i).replace(',', '.')) for i in range(1, 4) if m.group(i))),
+
+       (re.compile(r'\(?\b(\d+(?:[.,]\d+)?)\s*(?:kV|KV|kv)?\s*(?:/|\s|-|to|TO|To|~~|~)\s*(\d+(?:[.,]\d+)?)\s*(?:kV|KV|kv)\b\)?',re.IGNORECASE),
         lambda m: max(float(m.group(1).replace(',', '.')), float(m.group(2).replace(',', '.')))),
+
+        
+        # 10. Standalone kV value (e.g., "275kV" -> 275 kV)
+        (re.compile(r'\b(?:Primary|primary voltage)\s*(\d+(?:[.,]\d+)?)\s*kV\b(?!A)', re.IGNORECASE), 
+        lambda m: float(m.group(1).replace(',', '.'))),
+
+        # Extracts highest kV from "XX/YY kV" but prevents matching "XX YY kV" (no separator)
+        ( re.compile(
+        r'\b(?:Pri|Max)?[:\s]*'
+        r'(\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?)\s*(kV|KV|kv|V|v|volts|VOLTS|Volts|Volts)?'
+        r'\s*(?:,?\s*\d{1,3}\s*(?:Hz|HZ|hz|Phase|PH)?,?\s*)?'
+        r'(?:/|-|to|→|~~|~)\s*'
+        r'(?:Sec|Min)?[:\s]*'
+        r'(\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?)\s*(kV|KV|kv|V|v|volts|VOLTS|Volts|Volts)\b',re.IGNORECASE),        
+        (lambda m: max(
+         float(m.group(1).replace(',', '.')) if m.group(2) and 'kV' in m.group(2).lower() else convert_v_to_kv(float(m.group(1).replace(',', '.'))),
+         float(m.group(3).replace(',', '.')) if 'kV' in m.group(4).lower() else convert_v_to_kv(float(m.group(3).replace(',', '.'))))      if m and m.group(4) else None)),  # Ensure match exists and group(4) is present
+       
+
+        
+
         
         # 3. Highest voltage in V/kV and convert if necessary (e.g., "10000V/4160V" -> 10 kV)
-        (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*V\s*/\s*(\d+(?:[.,]\d+)?)\s*V\b'), 
-         lambda m: convert_v_to_kv(max(float(m.group(1).replace(',', '.')), float(m.group(2).replace(',', '.'))))),
+       (re.compile(r'\(?\b(\d+(?:[.,]\d+)?)\s*(?:V|v|volt|volts|Volts|Volts)?\s*(?:/|\s|-|to|To|TO)\s*(\d+(?:[.,]\d+)?)\s*(?:V|v|volt|volts|Volts|Volts)\b',re.IGNORECASE),
+        lambda m: convert_v_to_kv(max(float(m.group(1).replace(',', '.')), float(m.group(2).replace(',', '.'))))),
+
         
         # 4. Special case handling for "kV ± ..." patterns (e.g., "6,3 kV ± 2 x 2,5 % / 330 V" -> 6.3 kV)
-        (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*kV\s*[±\-]'), 
+        (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*kV\s*[±\-]',re.IGNORECASE), 
          lambda m: float(m.group(1).replace(',', '.'))),
         
         # 5. Standalone V value - Convert to kV, ensuring it is not part of another structure
-        (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*V\b(?!.*kV)'), 
+        (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*[Vv]\b(?!.*kV)'), 
          lambda m: convert_v_to_kv(float(m.group(1).replace(',', '.')))),
+
         
         # 6. Primary voltage in V - Convert to kV (e.g., "Primary 14400V" -> 14.4 kV)
         (re.compile(r'\bPrimary\s*(\d+(?:[.,]\d+)?)\s*V\b'), 
          lambda m: convert_v_to_kv(float(m.group(1).replace(',', '.')))),
+
         
         # 7. HV voltage in V - Convert to kV (e.g., "HV 690 V" -> 0.69 kV)
-        (re.compile(r'\bHV\s*(\d+(?:[.,]\d+)?)\s*V\b'), 
+        (re.compile(r'HV\s*(\d+(?:\.\d+)?)\s*(?:\[V\]|V)',re.IGNORECASE), 
          lambda m: convert_v_to_kv(float(m.group(1).replace(',', '.')))),
+
         
         # 8. HV voltage in kV - Extract directly (e.g., "HV [20kV]" -> 20 kV)
-        (re.compile(r'HV\s*(\d+(?:\.[,]\d+)?)\s*(?:\[kV\]|kV)'), 
+        (re.compile(r'HV\s*(\d+(?:\.[,]\d+)?)\s*(?:\[kV\]|kV)',re.IGNORECASE), 
          lambda m: float(m.group(1).replace(',', '.'))),
         
         # 9. HV voltage in V - Convert to kV (e.g., "HV [20V]" -> 20 kV)
@@ -158,16 +182,27 @@ def extract_primary_voltage(text):
          lambda m: convert_v_to_kv(float(m.group(1).replace(',', '.')))),
         
         # 10. Standalone kV value (e.g., "275kV" -> 275 kV)
-        (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*kV\b(?!A)'), 
+        (re.compile(r'\bPrimary\s*(\d+(?:[.,]\d+)?)\s*kV\b(?!A)'), 
          lambda m: float(m.group(1).replace(',', '.'))),
         
         # 11. Extract highest value from mixed format "V/kV" cases (e.g., "20000/2x502V" -> 20 kV)
         (re.compile(r'\b(\d+(?:[.,]\d+)?)\s*/\s*(?:\d+x)?(\d+(?:[.,]\d+)?)\s*V\b'), 
          lambda m: convert_v_to_kv(max(float(m.group(1).replace(',', '.')), float(m.group(2).replace(',', '.'))))),
+
+       (re.compile(
+        r'(\d+(?:\.\d+)?)\s*(?:x|×)\s*10(?:\^|\⁰|\¹|\²|\³|\⁴|\⁵|\⁶|\⁷|\⁸|\⁹)?(\d+)\s*(V|kV|KV|kv|volts|VOLTS)?'
+        r'\s*(?:/|-|to|→|~~|~)\s*'
+        r'(\d+(?:\.\d+)?)\s*(?:x|×)\s*10(?:\^|\⁰|\¹|\²|\³|\⁴|\⁵|\⁶|\⁷|\⁸|\⁹)?(\d+)\s*(V|kV|KV|kv|volts|VOLTS)'),
+        lambda m: max(
+        float(m.group(1)) * (10 ** int(m.group(2))) if 'kV' in (m.group(3) or '').lower() else convert_v_to_kv(float(m.group(1)) * (10 ** int(m.group(2)))),
+        float(m.group(4)) * (10 ** int(m.group(5))) if 'kV' in (m.group(6) or '').lower() else convert_v_to_kv(float(m.group(4)) * (10 ** int(m.group(5)))))),
         
         # 12. Extract kV values from transformer specifications (e.g., "5330kVA, 20000/2x502V" -> 20 kV)
         (re.compile(r'\b(\d{4,5})\s*/\s*\d+x\d+V\b'),
-         lambda m: convert_v_to_kv(float(m.group(1).replace(',', '.'))))
+         lambda m: convert_v_to_kv(float(m.group(1).replace(',', '.')))),
+
+        (re.compile(r'^\s*(\d+(?:[.,]\d+)?)\s*×\s*10(?:\^|\⁰|\¹|\²|\³|\⁴|\⁵|\⁶|\⁷|\⁸|\⁹)?(\d+)\s*(V|kV)(?=\s*/)',re.IGNORECASE),
+        lambda m: float(m.group(1).replace(',', '.')) * (10 ** int(m.group(2))) / (1000 if m.group(3).lower() == 'v' else 1))
     ]
     for pattern, func in patterns:
         match = pattern.search(text)
@@ -185,6 +220,8 @@ def extract_primary_voltage(text):
                 return "> 220 kV", "3"
     
     return "Unknown", ""
+
+    
 
     
 def convert_power(value):
@@ -228,20 +265,25 @@ def classify_power_range(mva_value):
             return description, code
     return "Unknown", ""
 
+def get_tooltip(value, is_default=False):
+    if is_default:
+        return f'<span title="This is a default value">{value} ℹ</span>'
+    return value
+
 
 def extract_attributes(supplier_text):
     """Extract key attributes from supplier text using regex and keyword matching."""
     attributes = {
-        "Product type": ("Unknown", ""),
-        "Power in MVA": ("Unknown", ""),
-        "Primary Voltage in kV":("Unknown", ""),
-        "Tap Changer": ("Unknown", " "),
-        "Application": ("Unknown", " "),
+        "Product type": ("Unknown", "X"),
+        "Power in MVA": ("Unknown", "X"),
+        "Primary Voltage in kV":("Unknown", "X"),
+        "Tap Changer": ("De-Energized Tap Changer", "0"),
+        "Application": ("Land Based", "0"),
         "System Category": ("Product","A"),
-        "Oil/Dry": ("Unknown", ""),
+        "Oil/Dry": ("Unknown", "X"),
         "Classification": ("Outdoor","1"),
         "Standard": ("IEC", "0"),
-        "Winding material": ("Unknown", "")
+        "Winding material": ("Unknown", "X")
     }
     
     product_types = {
@@ -390,22 +432,69 @@ def extract_attributes(supplier_text):
 def main():
     st.title("Transformer Code Generator")
     st.write("Enter supplier specifications to extract parameters and generate the power code.")
-    
-    supplier_text = st.text_area("Supplier Input:")
-    
+
+
+
+    supplier_text = st.text_area("Sample Description:Oil Distribution Transformer - 2300kVA - 10kV/0.4kV - 60Hz -AL-ONAN-IEC", height=100)
+
     if st.button("Extract Parameters"):
         if supplier_text:
             attributes, product_code = extract_attributes(supplier_text)
-            
-            st.subheader("Extracted Parameters")
-            df_params = pd.DataFrame([(key, val[0], val[1]) for key, val in attributes.items()], columns=["Type", "Parameter", "Code"])
-            st.table(df_params)
 
-            st.subheader("Generated Product Code")
-            st.write(f"**{product_code}**")
+            # Create DataFrame
+            df_params = pd.DataFrame(
+            [(key, get_tooltip(val[0], len(val) == 3), val[1]) for key, val in attributes.items()],
+            columns=["Type", "Parameter", "Code"]
+            )
+
+            # Function to Highlight 'X' in Red
+            def highlight_x(val):
+                return f'<span style="color: red; font-weight: bold;">{val}</span>' if val == "X" else val
+
+            df_params["Code"] = df_params["Code"].apply(highlight_x)
+
+            # Custom CSS to Match Table with Input Width
+            st.markdown("""
+                <style>
+                    .table-container {
+                        width: 100%;
+                        display: flex;
+                        justify-content: center;
+                    }
+                    table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        text-align: left;
+                    }
+                    th, td {
+                        border: 1px solid #ddd;
+                        padding: 2px;
+                        text-align: center;
+                    }
+                    th {
+                        background-color: #f4f4f4;
+                    }
+                </style>
+            """, unsafe_allow_html=True)
+            st.subheader("Extracted Parameters")
+
+            # Display Table with Matching Width
+            st.markdown('<div class="table-container">', unsafe_allow_html=True)
+            st.write(df_params.to_html(escape=False), unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            # Display Generated Product Code
+            st.subheader("Generated Product Code  ")
+            highlighted_code = re.sub(r'(X+)', r'<span style="color: red; font-weight: bold;">\1</span>', product_code)
+            st.markdown(f"<p style='text-align: left; font-size: 20px;'><code>{highlighted_code}</code></p>", unsafe_allow_html=True)
+
+             # Error Message for Missing Data
+            if "X" in product_code:
+                st.error("⚠️ An error occurred. Defaulting to 'X'. The required data might be missing from the provided description. Please check the input or adjust the data to match the format below.")
+
+
         else:
             st.warning("Please enter supplier input.")
 
 if __name__ == "__main__":
     main()
-
